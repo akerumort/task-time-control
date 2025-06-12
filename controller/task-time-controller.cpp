@@ -9,65 +9,66 @@
 #include <sys/time.h>
 #include <filesystem>
 
-#define FIFO_NAME "/tmp/time_pipe" // для запуска на WSL
+#define FIFO_NAME "/tmp/time_pipe" // for running on WSL
 #define MAX_TIME 3.0 
 
-int fifo_fd; // дескриптор FIFO
-int num_tasks; 
+int fifo_fd; // FIFO descriptor
+int num_tasks;
 
-// очистка при завершении
+// cleanup on termination
 void cleanup(int signum) {
-    std::cout << "\nКонтроллер завершает работу, удаление FIFO...\n";
+    std::cout << "\nController shutting down, removing FIFO...\n";
     close(fifo_fd);
     unlink(FIFO_NAME);
     exit(0);
 }
 
-// запись в лог при превышении времени выполнения
+// log time exceedance
 void log_time_exceedance(int stage, double time_spent) {
     std::string log_path = (std::filesystem::current_path() / "execution_log.txt").string();
-    
+
     std::ofstream logfile(log_path, std::ios::app);
     if (logfile.is_open()) {
-        logfile << "Этап " << stage << " превысил время: " << time_spent << " сек\n";
+        logfile << "Stage " << stage << " exceeded time: " << time_spent << " sec\n";
         logfile.close();
-    } else {
-        std::cerr << "Ошибка открытия файла журнала: " << log_path << std::endl;
+    }
+    else {
+        std::cerr << "Error opening log file: " << log_path << std::endl;
     }
 }
 
-// имитация выполнения задачи
+// simulate task execution
 void execute_task(int stage) {
-    srand(getpid()); 
+    srand(getpid());
 
     struct timeval start, end;
     gettimeofday(&start, nullptr);
 
-    // имитация работы до 5 секунд
+    // simulate work up to 5 seconds
     struct timespec ts;
-    ts.tv_sec = 1 + rand() % 4; 
-    ts.tv_nsec = rand() % 1000000000;  // задержка для предотвращения одновременного обращения к FIFO
+    ts.tv_sec = 1 + rand() % 4;
+    ts.tv_nsec = rand() % 1000000000;  // delay to prevent simultaneous FIFO access
     nanosleep(&ts, nullptr);
 
     gettimeofday(&end, nullptr);
 
-    // вычисление затраченного времени в секундах
+    // calculate elapsed time in seconds
     double elapsed_time = (end.tv_sec - start.tv_sec) + (end.tv_usec - start.tv_usec) / 1e6;
 
-    // ожидание FIFO до 3 секунд
+    // wait for FIFO up to 3 seconds
     for (int i = 0; i < 6; i++) {
         if (access(FIFO_NAME, F_OK) == 0) break;
         usleep(500000);
     }
 
-    // открытие FIFO для записи
+    // open FIFO for writing
     int fifo_fd = open(FIFO_NAME, O_WRONLY);
     if (fifo_fd == -1) {
-        perror("Ошибка открытия FIFO");
+        perror("Error opening FIFO");
         exit(1);
     }
 
-    // формирование строки и отправление в FIFO
+    // form string and write to FIFO
     char buffer[256];
     snprintf(buffer, sizeof(buffer), "%03d %.6f\n", stage, elapsed_time);
     write(fifo_fd, buffer, strlen(buffer));
@@ -77,58 +78,58 @@ void execute_task(int stage) {
 }
 
 int main() {
-    std::cout << "Введите количество этапов: ";
+    std::cout << "Enter number of stages: ";
     std::cin >> num_tasks;
 
     if (num_tasks <= 0) {
-        std::cerr << "Ошибка: количество этапов должно быть положительным числом.\n";
+        std::cerr << "Error: number of stages must be positive.\n";
         return 1;
     }
 
-    // очистка перед созданием канала
+    // cleanup before creating pipe
     signal(SIGINT, cleanup);
     unlink(FIFO_NAME);
 
-    // создание FIFO
+    // create FIFO
     if (mkfifo(FIFO_NAME, 0666) == -1) {
-        perror("Ошибка создания FIFO");
+        perror("Error creating FIFO");
         return 1;
     }
 
-    std::cout << "Контроллер запущен. Запускаем " << num_tasks << " задач...\n";
+    std::cout << "Controller started. Launching " << num_tasks << " tasks...\n";
 
-    //зЗапуск num_tasks задач в отдельных процессах
+    // launch num_tasks tasks in separate processes
     for (int i = 1; i <= num_tasks; i++) {
         pid_t pid = fork();
         if (pid == -1) {
-            perror("Ошибка fork()");
+            perror("Error in fork()");
             return 1;
         }
-        if (pid == 0) { // Дочерний процесс
+        if (pid == 0) { // child process
             execute_task(i);
         }
     }
 
-    // открытие FIFO для чтения
+    // Open FIFO for reading
     fifo_fd = open(FIFO_NAME, O_RDONLY);
     if (fifo_fd == -1) {
-        perror("Ошибка открытия FIFO");
+        perror("Error opening FIFO");
         unlink(FIFO_NAME);
         return 1;
     }
 
     std::string dataBuffer;
     char buffer[256];
-    int received_tasks = 0; // полученные задачи
+    int received_tasks = 0; // received tasks
 
-    // чтение данных из FIFO
+    // read data from FIFO
     while (received_tasks < num_tasks) {
         ssize_t bytesRead = read(fifo_fd, buffer, sizeof(buffer) - 1);
         if (bytesRead > 0) {
             buffer[bytesRead] = '\0';
             dataBuffer += buffer;
 
-            // обработка строк
+            // process lines
             size_t pos;
             while ((pos = dataBuffer.find('\n')) != std::string::npos) {
                 std::string line = dataBuffer.substr(0, pos);
@@ -139,18 +140,20 @@ int main() {
 
                 if (sscanf(line.c_str(), "%d %lf", &stage, &time_spent) == 2) {
                     if (stage >= 1 && stage <= num_tasks) {
-                        std::cout << "Этап " << stage << " выполнен. Время: " << time_spent << " сек\n";
+                        std::cout << "Stage " << stage << " completed. Time: " << time_spent << " sec\n";
 
                         if (time_spent > MAX_TIME) {
                             log_time_exceedance(stage, time_spent);
                         }
 
                         received_tasks++;
-                    } else {
-                        std::cerr << "Ошибка: некорректный номер этапа: " << stage << std::endl;
                     }
-                } else {
-                    std::cerr << "Ошибка разбора данных: " << line << std::endl;
+                    else {
+                        std::cerr << "Error: invalid stage number: " << stage << std::endl;
+                    }
+                }
+                else {
+                    std::cerr << "Error parsing data: " << line << std::endl;
                 }
             }
         }
